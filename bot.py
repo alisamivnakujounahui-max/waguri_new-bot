@@ -18,7 +18,9 @@ from aiogram.client.default import DefaultBotProperties
 from flask import Flask
 
 # ================= CONFIG =================
-TOKEN = "8737614623:AAG988AgZyD9X1g11W2DOP4zLmW4eBHZD-4"
+import os
+
+TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = 7799004635
 DB_FILE = "db.json"
 
