@@ -6,7 +6,6 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatPermissions
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.utils.markdown import hlink
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = os.getenv("TOKEN")
@@ -17,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask('')
 @app.route('/')
-def home(): return "Waguruko Final System: Active"
+def home(): return "Waguruko Final System: Online"
 def run(): app.run(host='0.0.0.0', port=8080)
 def keep_alive(): Thread(target=run).start()
 
@@ -43,10 +42,7 @@ class Database:
         uid = str(uid)
         if uid not in self.data["users"]:
             self.data["users"][uid] = {"name": name, "exp": 0, "softness": 0, "last_cake": 0, "warns": 0}
-        else:
-            # Обновляем имя, если оно изменилось
-            self.data["users"][uid]["name"] = name
-        self.save()
+            self.save()
         return self.data["users"][uid]
 
 db = Database(DB_FILE)
@@ -66,19 +62,20 @@ def main_kb(uid):
     builder.row(InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu"))
     return builder.as_markup()
 
-# --- ОБРАБОТЧИКИ КНОПОК ---
+# --- ПРИВЕТСТВИЕ НОВИЧКОВ ---
+@dp.message(F.new_chat_members)
+async def welcome_new_member(m: types.Message):
+    for member in m.new_chat_members:
+        if member.is_bot: continue
+        db.get_user(member.id, member.first_name)
+        welcome_text = (
+            f"<b>Добро пожаловать в наш уютный уголок, {member.mention_html()}!</b> 🌸\n\n"
+            f"Я — Вагури Каоруко, душа этого чата. У нас можно кушать тортики, растить мягкость щечек "
+            f"и просто мило общаться. Нажми на кнопку ниже, чтобы узнать, что я умею!"
+        )
+        await m.answer(welcome_text, parse_mode="HTML", reply_markup=main_kb(member.id))
 
-@dp.callback_query(F.data == "admins_list")
-async def view_admins(call: CallbackQuery):
-    txt = "<b>👑 Любимчики Вагури:</b>\n\n"
-    for admin_id in db.data["admins"]:
-        admin_info = db.data["users"].get(str(admin_id))
-        name = admin_info["name"] if admin_info else f"User_{admin_id}"
-        # Делаем имя ссылкой на профиль (через tg://user?id=...)
-        txt += f"• <a href='tg://user?id={admin_id}'>{name}</a> (<code>{admin_id}</code>)\n"
-    
-    await call.message.edit_text(txt, parse_mode="HTML", reply_markup=main_kb(call.from_user.id))
-
+# --- ОБРАБОТЧИКИ (ТОРТИК, ПРОФИЛЬ, ТОП) ---
 @dp.callback_query(F.data == "eat_cake")
 async def cake_logic(call: CallbackQuery):
     uid = str(call.from_user.id)
@@ -90,18 +87,15 @@ async def cake_logic(call: CallbackQuery):
     u["softness"] += growth
     u["last_cake"] = now
     db.save()
-    await call.message.edit_text(f"🍰 <b>Ням!</b>\nМягкость щечек увеличилась на <b>{growth} ед.</b>\nВсего: <b>{u['softness']} ед.</b> ✨", 
+    await call.message.edit_text(f"🍰 <b>Ням!</b>\nМягкость щечек увеличилась на <b>{growth} ед.</b>\nВсего: <b>{u['softness']} ед.</b>", 
                                  parse_mode="HTML", reply_markup=main_kb(uid))
 
-# --- ПРИВЕТСТВИЕ И ОБРАБОТКА ИМЕН ---
-
-@dp.message(F.new_chat_members)
-async def welcome_new_member(m: types.Message):
-    for member in m.new_chat_members:
-        if member.is_bot: continue
-        db.get_user(member.id, member.first_name)
-        await m.answer(f"<b>Добро пожаловать, {member.mention_html()}!</b> 🌸\nЯ — Вагури Каоруко. Нажми кнопку, чтобы познакомиться!", 
-                       parse_mode="HTML", reply_markup=main_kb(member.id))
+@dp.callback_query(F.data == "profile")
+async def view_profile(call: CallbackQuery):
+    u = db.get_user(call.from_user.id)
+    role = "👑 Создатель" if call.from_user.id == OWNER_ID else ("🛡 Админ" if call.from_user.id in db.data["admins"] else "👤 Участник")
+    await call.message.edit_text(f"<b>『 🌸 Профиль 』</b>\n\n👤 Имя: {u['name']}\n🎖 Статус: {role}\n💠 EXP: {u['exp']}\n☁️ Мягкость: {u['softness']} ед.", 
+                                 parse_mode="HTML", reply_markup=main_kb(call.from_user.id))
 
 # --- РП И МОДЕРАЦИЯ ---
 RP_MAP = {"обнять": "hug", "поцеловать": "kiss", "кусь": "bite", "гладить": "pat", "уебать": "slap", "тык": "poke"}
@@ -111,11 +105,6 @@ async def reply_handler(m: types.Message):
     txt = m.text.lower().strip()
     target = m.reply_to_message.from_user
     uid = m.from_user.id
-    
-    # Обновляем данные обоих участников в базе при любом взаимодействии
-    db.get_user(uid, m.from_user.first_name)
-    db.get_user(target.id, target.first_name)
-    
     is_admin = uid in db.data["admins"]
 
     if is_admin:
@@ -127,7 +116,7 @@ async def reply_handler(m: types.Message):
             return await m.answer(f"❌ {target.first_name} разжалован.")
         if txt == "мут":
             await m.chat.restrict(target.id, permissions=ChatPermissions(can_send_messages=False), until_date=timedelta(minutes=15))
-            return await m.answer(f"🔇 {target.first_name} в муте.")
+            return await m.answer(f"🔇 {target.first_name} отправлен в мут.")
 
     if txt in RP_MAP:
         async with aiohttp.ClientSession() as sess:
@@ -136,28 +125,19 @@ async def reply_handler(m: types.Message):
                 await m.answer_animation(data["url"], caption=f"🌸 {m.from_user.mention_html()} {txt} {target.mention_html()}!", parse_mode="HTML")
                 db.get_user(uid)["exp"] += 5; db.save()
 
-# --- СИСТЕМНОЕ ---
+# --- ТРИГГЕРЫ И СТАРТ ---
 @dp.message(Command("start"))
 async def start_cmd(m: types.Message):
     db.get_user(m.from_user.id, m.from_user.first_name)
-    await m.answer("🌸 Я Вагури! Позови меня по имени, чтобы открыть меню.", reply_markup=main_kb(m.from_user.id))
+    await m.answer("🌸 Я тут! Позови меня по имени, чтобы открыть меню.", reply_markup=main_kb(m.from_user.id))
 
 @dp.message(lambda m: any(n in m.text.lower() for n in ["вагури", "каоруко"]))
 async def name_trigger(m: types.Message):
     if m.text.startswith("/") or m.new_chat_members: return
-    db.get_user(m.from_user.id, m.from_user.first_name)
     await m.answer(f"Слушаю, {m.from_user.first_name}! Чем займемся?", reply_markup=main_kb(m.from_user.id))
 
 @dp.callback_query(F.data == "close_menu")
 async def close_menu(call: CallbackQuery): await call.message.delete()
-
-# Остальные кнопки (профиль, топ и т.д.) оставить из прошлой версии
-@dp.callback_query(F.data == "profile")
-async def profile_call(call: CallbackQuery):
-    u = db.get_user(call.from_user.id, call.from_user.first_name)
-    role = "👑 Создатель" if call.from_user.id == OWNER_ID else ("🛡 Админ" if call.from_user.id in db.data["admins"] else "👤 Участник")
-    await call.message.edit_text(f"<b>『 🌸 Профиль 』</b>\n\n👤 Имя: {u['name']}\n🎖 Статус: {role}\n💠 EXP: {u['exp']}\n☁️ Мягкость: {u['softness']} ед.", 
-                                 parse_mode="HTML", reply_markup=main_kb(call.from_user.id))
 
 async def main():
     keep_alive()
