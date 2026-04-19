@@ -1,255 +1,167 @@
-# ADVANCED Telegram Bot: Waguri Kaoruko (aiogram 3.x)
-# Production-ready, fault-tolerant, structured
-
-import asyncio
-import json
-import logging
-import random
-import time
+import asyncio, random, aiohttp, time, os, json, logging
 from threading import Thread
-from typing import Dict
-
-from aiohttp import ClientSession, ClientTimeout
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
+from datetime import timedelta
 from flask import Flask
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ChatPermissions
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.markdown import hlink
 
-# ================= CONFIG =================
-import os
+# --- КОНФИГУРАЦИЯ ---
+TOKEN = os.getenv("TOKEN")
+OWNER_ID = 7799004635 
+DB_FILE = "waguruko_final_db.json"
 
-TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = 7799004635
-DB_FILE = "db.json"
+logging.basicConfig(level=logging.INFO)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
-
-# ================= KEEP ALIVE =================
-app = Flask(__name__)
-
+app = Flask('')
 @app.route('/')
-def home():
-    return "alive"
+def home(): return "Waguruko Final System: Active"
+def run(): app.run(host='0.0.0.0', port=8080)
+def keep_alive(): Thread(target=run).start()
 
-
-def run_web():
-    app.run(host='0.0.0.0', port=8080)
-
-
-def keep_alive():
-    Thread(target=run_web, daemon=True).start()
-
-# ================= DATABASE =================
+# --- DATABASE ---
 class Database:
-    def __init__(self, file: str):
-        self.file = file
+    def __init__(self, path):
+        self.path = path
         self.data = self.load()
 
-    def load(self) -> Dict:
-        try:
-            with open(self.file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {"users": {}, "admins": []}
+    def load(self):
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except: pass
+        return {"users": {}, "admins": [OWNER_ID]}
 
     def save(self):
-        try:
-            with open(self.file, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logging.error(f"DB SAVE ERROR: {e}")
+        with open(self.path, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=4)
 
-    def get_user(self, user_id: int):
-        uid = str(user_id)
+    def get_user(self, uid, name="Странник"):
+        uid = str(uid)
         if uid not in self.data["users"]:
-            self.data["users"][uid] = {
-                "exp": 0,
-                "cake": 0,
-                "warns": 0,
-                "last_cake": 0,
-                "last_date": 0
-            }
+            self.data["users"][uid] = {"name": name, "exp": 0, "softness": 0, "last_cake": 0, "warns": 0}
+        else:
+            # Обновляем имя, если оно изменилось
+            self.data["users"][uid]["name"] = name
+        self.save()
         return self.data["users"][uid]
 
-    def is_admin(self, user_id: int):
-        return user_id == OWNER_ID or user_id in self.data.get("admins", [])
-
-
-DB = Database(DB_FILE)
-
-# ================= BOT CORE =================
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+db = Database(DB_FILE)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
-router = Router()
 
-# ================= UI =================
-def main_menu(user_id):
-    buttons = [
-        [InlineKeyboardButton(text="🎭 РП", callback_data="rp")],
-        [InlineKeyboardButton(text="🍰 Тортик", callback_data="cake")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
-        [InlineKeyboardButton(text="🏆 Топ", callback_data="top")],
-        [InlineKeyboardButton(text="❤️ Свидание", callback_data="date")],
-        [InlineKeyboardButton(text="👑 Любимчики", callback_data="admins")],
-    ]
-    if DB.is_admin(user_id):
-        buttons.append([InlineKeyboardButton(text="🛡 Админка", callback_data="admin")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+# --- КЛАВИАТУРА ---
+def main_kb(uid):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🎭 РП Список", callback_data="rp_list"), 
+                InlineKeyboardButton(text="🍰 Скушать тортик", callback_data="eat_cake"))
+    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
+                InlineKeyboardButton(text="☁️ Топ Мягкости", callback_data="top_soft"))
+    builder.row(InlineKeyboardButton(text="👑 Любимчики", callback_data="admins_list"))
+    if int(uid) in db.data["admins"]:
+        builder.row(InlineKeyboardButton(text="🛡 Мод-Панель", callback_data="mod_help"))
+    builder.row(InlineKeyboardButton(text="❌ Закрыть", callback_data="close_menu"))
+    return builder.as_markup()
 
-# ================= START =================
-@router.message(CommandStart())
-async def start(message: Message):
-    await message.answer(
-        "<b>Вагури Каоруко здесь... 💕</b>\n"
-        "Я не просто бот. Я твоя вайфу с системой прогрессии.\n\n"
-        "🎭 RP\n🍰 Рост\n🏆 Топы\n🛡 Модерация",
-        reply_markup=main_menu(message.from_user.id)
-    )
+# --- ОБРАБОТЧИКИ КНОПОК ---
 
-# ================= PROFILE =================
-def calc_level(exp):
-    return int(exp ** 0.5)
+@dp.callback_query(F.data == "admins_list")
+async def view_admins(call: CallbackQuery):
+    txt = "<b>👑 Любимчики Вагури:</b>\n\n"
+    for admin_id in db.data["admins"]:
+        admin_info = db.data["users"].get(str(admin_id))
+        name = admin_info["name"] if admin_info else f"User_{admin_id}"
+        # Делаем имя ссылкой на профиль (через tg://user?id=...)
+        txt += f"• <a href='tg://user?id={admin_id}'>{name}</a> (<code>{admin_id}</code>)\n"
+    
+    await call.message.edit_text(txt, parse_mode="HTML", reply_markup=main_kb(call.from_user.id))
 
-@router.callback_query(F.data == "profile")
-async def profile(callback: CallbackQuery):
-    user = DB.get_user(callback.from_user.id)
-
-    level = calc_level(user['exp'])
-    role = "👑 Owner" if callback.from_user.id == OWNER_ID else ("🛡 Admin" if DB.is_admin(callback.from_user.id) else "🌸 User")
-
-    text = (
-        f"👤 <b>{callback.from_user.full_name}</b>\n"
-        f"{role}\n\n"
-        f"⭐ LVL: {level}\n"
-        f"✨ EXP: {user['exp']}\n"
-        f"🍰 Тортик: {user['cake']} см\n"
-        f"⚠ Варны: {user['warns']}"
-    )
-
-    await callback.message.edit_text(text, reply_markup=main_menu(callback.from_user.id))
-
-# ================= CAKE =================
-@router.callback_query(F.data == "cake")
-async def cake(callback: CallbackQuery):
-    user = DB.get_user(callback.from_user.id)
+@dp.callback_query(F.data == "eat_cake")
+async def cake_logic(call: CallbackQuery):
+    uid = str(call.from_user.id)
+    u = db.get_user(uid, call.from_user.first_name)
     now = time.time()
+    if now - u["last_cake"] < 3600:
+        return await call.answer("⏳ Щечки еще не проголодались!", show_alert=True)
+    growth = random.randint(0, 20)
+    u["softness"] += growth
+    u["last_cake"] = now
+    db.save()
+    await call.message.edit_text(f"🍰 <b>Ням!</b>\nМягкость щечек увеличилась на <b>{growth} ед.</b>\nВсего: <b>{u['softness']} ед.</b> ✨", 
+                                 parse_mode="HTML", reply_markup=main_kb(uid))
 
-    if now - user['last_cake'] < 3600:
-        await callback.answer("⏳ Подожди...", show_alert=True)
-        return
+# --- ПРИВЕТСТВИЕ И ОБРАБОТКА ИМЕН ---
 
-    grow = random.randint(0, 15)
-    user['cake'] = max(0, user['cake'] + grow)
-    user['last_cake'] = now
+@dp.message(F.new_chat_members)
+async def welcome_new_member(m: types.Message):
+    for member in m.new_chat_members:
+        if member.is_bot: continue
+        db.get_user(member.id, member.first_name)
+        await m.answer(f"<b>Добро пожаловать, {member.mention_html()}!</b> 🌸\nЯ — Вагури Каоруко. Нажми кнопку, чтобы познакомиться!", 
+                       parse_mode="HTML", reply_markup=main_kb(member.id))
 
-    DB.save()
+# --- РП И МОДЕРАЦИЯ ---
+RP_MAP = {"обнять": "hug", "поцеловать": "kiss", "кусь": "bite", "гладить": "pat", "уебать": "slap", "тык": "poke"}
 
-    await callback.message.answer(f"🍰 +{grow} см")
+@dp.message(F.reply_to_message)
+async def reply_handler(m: types.Message):
+    txt = m.text.lower().strip()
+    target = m.reply_to_message.from_user
+    uid = m.from_user.id
+    
+    # Обновляем данные обоих участников в базе при любом взаимодействии
+    db.get_user(uid, m.from_user.first_name)
+    db.get_user(target.id, target.first_name)
+    
+    is_admin = uid in db.data["admins"]
 
-# ================= DATE =================
-@router.callback_query(F.data == "date")
-async def date(callback: CallbackQuery):
-    user = DB.get_user(callback.from_user.id)
-    now = time.time()
+    if is_admin:
+        if txt == "+админ" and uid == OWNER_ID:
+            if target.id not in db.data["admins"]: db.data["admins"].append(target.id); db.save()
+            return await m.answer(f"💎 {target.first_name} теперь Админ!")
+        if txt == "-админ" and uid == OWNER_ID:
+            if target.id in db.data["admins"]: db.data["admins"].remove(target.id); db.save()
+            return await m.answer(f"❌ {target.first_name} разжалован.")
+        if txt == "мут":
+            await m.chat.restrict(target.id, permissions=ChatPermissions(can_send_messages=False), until_date=timedelta(minutes=15))
+            return await m.answer(f"🔇 {target.first_name} в муте.")
 
-    if now - user['last_date'] < 14400:
-        await callback.answer("⏳ 4 часа кулдаун", show_alert=True)
-        return
+    if txt in RP_MAP:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(f"https://api.waifu.pics/sfw/{RP_MAP[txt]}") as r:
+                data = await r.json()
+                await m.answer_animation(data["url"], caption=f"🌸 {m.from_user.mention_html()} {txt} {target.mention_html()}!", parse_mode="HTML")
+                db.get_user(uid)["exp"] += 5; db.save()
 
-    change = random.choice([25, -5])
-    user['exp'] += change
-    user['last_date'] = now
+# --- СИСТЕМНОЕ ---
+@dp.message(Command("start"))
+async def start_cmd(m: types.Message):
+    db.get_user(m.from_user.id, m.from_user.first_name)
+    await m.answer("🌸 Я Вагури! Позови меня по имени, чтобы открыть меню.", reply_markup=main_kb(m.from_user.id))
 
-    DB.save()
+@dp.message(lambda m: any(n in m.text.lower() for n in ["вагури", "каоруко"]))
+async def name_trigger(m: types.Message):
+    if m.text.startswith("/") or m.new_chat_members: return
+    db.get_user(m.from_user.id, m.from_user.first_name)
+    await m.answer(f"Слушаю, {m.from_user.first_name}! Чем займемся?", reply_markup=main_kb(m.from_user.id))
 
-    await callback.message.answer(f"❤️ EXP: {change}")
+@dp.callback_query(F.data == "close_menu")
+async def close_menu(call: CallbackQuery): await call.message.delete()
 
-# ================= TOP =================
-def build_top(key):
-    users = sorted(DB.data['users'].items(), key=lambda x: x[1][key], reverse=True)[:10]
-    text = ""
-    for i, (uid, data) in enumerate(users, 1):
-        text += f"{i}. {uid} — {data[key]}\n"
-    return text
+# Остальные кнопки (профиль, топ и т.д.) оставить из прошлой версии
+@dp.callback_query(F.data == "profile")
+async def profile_call(call: CallbackQuery):
+    u = db.get_user(call.from_user.id, call.from_user.first_name)
+    role = "👑 Создатель" if call.from_user.id == OWNER_ID else ("🛡 Админ" if call.from_user.id in db.data["admins"] else "👤 Участник")
+    await call.message.edit_text(f"<b>『 🌸 Профиль 』</b>\n\n👤 Имя: {u['name']}\n🎖 Статус: {role}\n💠 EXP: {u['exp']}\n☁️ Мягкость: {u['softness']} ед.", 
+                                 parse_mode="HTML", reply_markup=main_kb(call.from_user.id))
 
-@router.callback_query(F.data == "top")
-async def top(callback: CallbackQuery):
-    text = (
-        "🏆 <b>Топы</b>\n\n"
-        "🍰 Тортики:\n" + build_top("cake") + "\n"
-        "✨ EXP:\n" + build_top("exp")
-    )
-    await callback.message.edit_text(text)
-
-# ================= RP =================
-RP_ACTIONS = ["hug","kiss","bite","pat","slap","cuddle","lick","poke","wink","smile",
-              "dance","cry","laugh","blush","sleep","wave","highfive","facepalm","shrug","yeet"]
-
-async def fetch_gif(action):
-    try:
-        timeout = ClientTimeout(total=5)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.get(f"https://api.waifu.pics/sfw/{action}") as r:
-                return (await r.json()).get("url")
-    except Exception as e:
-        logging.error(f"GIF ERROR: {e}")
-        return None
-
-@router.message()
-async def rp(message: Message):
-    if not message.reply_to_message or not message.text:
-        return
-
-    cmd = message.text.lower()
-    if cmd not in RP_ACTIONS:
-        return
-
-    gif = await fetch_gif(cmd)
-    if not gif:
-        return
-
-    user = DB.get_user(message.from_user.id)
-    user['exp'] += 2
-    DB.save()
-
-    await message.answer_animation(gif)
-
-# ================= ADMIN =================
-@router.message()
-async def admin(message: Message):
-    if not DB.is_admin(message.from_user.id):
-        return
-
-    if not message.reply_to_message:
-        return
-
-    target = message.reply_to_message.from_user.id
-    text = message.text.lower()
-
-    if "варн" in text:
-        DB.get_user(target)['warns'] += 1
-        DB.save()
-        await message.answer("⚠ Варн выдан")
-
-    if "+админ" in text and message.from_user.id == OWNER_ID:
-        if target not in DB.data['admins']:
-            DB.data['admins'].append(target)
-            DB.save()
-            await message.answer("🛡 Новый админ")
-
-# ================= RUN =================
 async def main():
     keep_alive()
-    dp.include_router(router)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logging.critical(f"CRASH: {e}")
+    asyncio.run(main())
